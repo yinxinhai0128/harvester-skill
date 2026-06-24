@@ -56,13 +56,11 @@ npx skills add {owner}/harvester-skill
 # 2. 安装依赖工具
 pip install yt-dlp openai-whisper scenedetect[opencv] trafilatura
 
-# 3. (可选) 视觉分析 — 任选一个
-# Gemini Vision（推荐）
-export GEMINI_API_KEY="your-key"
-# 或 GPT-4o Vision
-export OPENAI_API_KEY="your-key"
-# 或本地 Qwen-VL（免费）
-pip install transformers qwen-vl-utils
+# 3. 视觉分析 — 推荐 Qwen-VL（国内性价比最高）
+# 获取 API Key: https://bailian.console.aliyun.com/
+export DASHSCOPE_API_KEY=***
+# 或 DeepSeek-VL（最便宜）：export DEEPSEEK_API_KEY=***
+# 或本地部署（零成本，需 8GB+ GPU）：pip install transformers qwen-vl-utils torch
 ```
 
 ## 使用

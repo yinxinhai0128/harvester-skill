@@ -185,49 +185,92 @@ ffmpeg -i video.mp4 -vf "select='eq(n,0)+if(gt(scene,0.3),1,0)'"   -vsync vfr fr
 
 #### Step 3c：帧视觉分析
 
-对每个关键帧调用视觉模型：
+对每个关键帧调用视觉模型。**优先级**：Qwen-VL（国内性价比最高）→ DeepSeek-VL（最便宜）→ 本地部署。
 
-```python
-# Gemini Vision 分析帧
-import google.generativeai as genai
+**方案一：Qwen-VL（阿里百炼，推荐）**
 
-model = genai.GenerativeModel('gemini-2.5-flash')
+国内最优选择。OpenAI 兼容 API，中文理解最好，¥0.0015/千tokens。
 
-for frame_path in frame_paths:
-    response = model.generate_content([
-        "描述这个画面的内容。重点关注："
-        "1. 屏幕上显示什么？代码/图表/幻灯片/网页？"
-        "2. 有什么文字标注或标题？"
-        "3. 人物的动作和表情？"
-        "4. 画面切换的节奏（快/慢）？",
-        {"mime_type": "image/png", "data": open(frame_path, 'rb').read()}
-    ])
-    frame_descriptions.append({
-        "timestamp": extract_timestamp(frame_path),
-        "description": response.text
-    })
+```bash
+# 获取 API Key: https://bailian.console.aliyun.com/
+export DASHSCOPE_API_KEY=sk-xxx
+pip install openai  # Qwen-VL 使用 OpenAI 兼容接口
 ```
 
-**如果 Gemini 不可用** → 用 GPT-4o Vision：
 ```python
 from openai import OpenAI
-client = OpenAI()
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "描述这个画面的内容..."},
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_frame}"}}
-        ]
-    }]
+import base64, os
+
+client = OpenAI(
+    api_key=os.environ["DASHSCOPE_API_KEY"],
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
 )
+
+def analyze_frame_qwen(frame_path):
+    with open(frame_path, "rb") as f:
+        img_b64 = base64.b64encode(f.read()).decode()
+
+    response = client.chat.completions.create(
+        model="qwen-vl-plus",  # 或 qwen-vl-max（更准但贵一倍）
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "描述这个视频画面的内容。重点："
+                 "1)屏幕上有代码/图表/幻灯片/网页？2)文字标注或标题？"
+                 "3)人物动作和表情？4)画面切换节奏？用中文回答，不超过3句话。"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}
+            ]
+        }],
+        max_tokens=300
+    )
+    return response.choices[0].message.content
+
+# 批量分析
+frame_descriptions = []
+for fp in sorted(frame_paths):
+    desc = analyze_frame_qwen(fp)
+    frame_descriptions.append({"timestamp": extract_timestamp(fp), "description": desc})
 ```
 
-**如果都不可用** → 本地 Qwen-VL（免费但需要 GPU）：
+**成本估算**：每条抖音短视频约 10 帧 → ¥0.02-0.05/条。分析 100 条视频约 ¥3-5。
+
+**方案二：DeepSeek-VL2（最便宜）**
+
+¥0.001/千tokens，比 Qwen-VL 还便宜。API 同样兼容 OpenAI 格式。
+
 ```python
-from transformers import Qwen2VLForConditionalGeneration
-# 部署在本地 GPU 上
+client = OpenAI(
+    api_key=os.environ["DEEPSEEK_API_KEY"],
+    base_url="https://api.deepseek.com"
+)
+# model="deepseek-vl2" — 调用方式同上
+```
+
+**方案三：本地部署（零成本，需 GPU）**
+
+Qwen2.5-VL-7B-Instruct，8GB+ VRAM 即可。每帧零成本。
+
+```bash
+pip install transformers qwen-vl-utils torch
+```
+
+```python
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from qwen_vl_utils import process_vision_info
+
+model = Qwen2VLForConditionalGeneration.from_pretrained(
+    "Qwen/Qwen2.5-VL-7B-Instruct", torch_dtype="auto", device_map="auto"
+)
+processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct")
+
+# 分析单帧
+messages = [{"role": "user", "content": [
+    {"type": "image", "image": frame_path},
+    {"type": "text", "text": "描述这个画面的内容，用中文，不超过3句话。"}
+]}]
+text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+inputs = processor(text=text, images=[...], return_tensors="pt").to(model.device)
+output = model.generate(**inputs, max_new_tokens=300)
 ```
 
 #### Step 3d：时间轴对齐 + 融合
@@ -311,7 +354,7 @@ from transformers import Qwen2VLForConditionalGeneration
 | 视频下载失败 | yt-dlp 报错 (HTTP 403/地区限制) | 尝试 you-get 作为 fallback；仍失败 → 跳过该条，标注原因 |
 | 抖音被限流 | 连续 3 个视频下载失败 | 等待 5 分钟 + 切换 User-Agent；仍失败 → 暂停抖音采集 |
 | whisper 转录质量差 | 中文转录准确率 < 70% | 换用 larger 模型重新转录；如果环境不支持 → 使用 API (Groq Whisper) |
-| 视觉模型不可用 | Gemini/OpenAI API 都挂了 | 退回纯字幕模式，标注「视觉分析不可用」 |
+| 视觉模型不可用 | 所有 API 都挂了 | 退回纯字幕模式，标注「视觉分析不可用」。国内用户优先配 Qwen-VL（阿里百炼，¥0.0015/千tokens） |
 | 关键帧太多 | 视频 > 1 小时 | 采样：每 60 秒取 1 帧 + 场景切换点 |
 | 磁盘空间不足 | 下载目录 > 10GB | 暂停采集，告知用户；建议分批处理 |
 | 作者不在平台上 | 搜索无结果 | 跳过该平台，标注「未找到」 |
@@ -346,7 +389,7 @@ harvest_output/{作者名}/
 ## 诚实边界
 
 - **依赖外部工具** — yt-dlp、whisper、PySceneDetect 等需要预装。无法安装时功能降级
-- **视觉模型成本** — Gemini Vision / GPT-4o 按 token 计费。长视频（>30min）的分析成本可能较高
+- **视觉模型成本** — Qwen-VL-Plus ¥0.0015/千tokens，每条短视频约 ¥0.02-0.05。本地部署 Qwen2.5-VL-7B 零成本但需要 8GB+ GPU
 - **抖音反爬强度** — 抖音反爬更新频繁，douyin-downloader 可能随时失效。备用方案：手机录屏
 - **纯字幕模式降级** — 无视觉模型时信息完整性约 30%
 - **版权** — 采集的视频/文章仅供个人学习研究，不重新分发
