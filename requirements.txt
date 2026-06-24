@@ -1,0 +1,3 @@
+openai-whisper
+openai
+yt-dlp

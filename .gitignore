@@ -1,0 +1,18 @@
+# 敏感文件
+douyin_cookie.txt
+_chrome_cookies.txt
+cookies.txt
+
+# 输出和缓存
+harvest_output/
+logs/
+*.db
+
+# Python 环境
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 开发临时文件
+test_cookie.py
